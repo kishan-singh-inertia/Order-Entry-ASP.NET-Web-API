@@ -1,0 +1,14 @@
+@Ecom_HostAddress = http://localhost:5075/api
+
+POST {{Ecom_HostAddress}}/Ecom
+Content-Type: application/json
+{
+  "OrderId":"123",
+  "TotalAmount":"75000",
+  "Discount":"10"
+}
+
+###
+
+GET {{Ecom_HostAddress}}/ProductsList
+

@@ -1,0 +1,421 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Order Entry</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        .form-row {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 12px;
+            align-items: center;
+        }
+
+            .form-row label {
+                min-width: 120px;
+                font-weight: bold;
+            }
+
+            
+            .form-row.right {
+                justify-content: flex-end;
+            }
+
+        input[type="text"], input[type="number"], input[type="date"] {
+            padding: 6px;
+            width: 240px;
+        }
+
+        button {
+            padding: 8px 12px;
+            cursor: pointer;
+            background-color: cornflowerblue;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background: #f5f5f5;
+        }
+
+        tfoot td {
+            font-weight: bold;
+        }
+
+        .right {
+            text-align: right;
+        }
+
+        .center {
+            text-align: center;
+        }
+
+        .qty {
+            width: 80px;
+        }
+
+        .percent {
+            width: 80px;
+        }
+
+        .price, .amount {
+            width: 120px;
+        }
+
+        .success {
+            color: #0b7a0b;
+            margin-top: 10px;
+        }
+
+        .error {
+            color: #a10000;
+            margin-top: 10px;
+        }
+
+        .order-no {
+            font-weight: bold;
+            min-width: 120px;
+            display: inline-block;
+        }
+
+        .saveOrderBtn {
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Create Order</h1>
+
+    <div class="form-row">
+        <label>Order No:</label>
+        <span id="orderNo" class="order-no">[will be generated]</span>
+    </div>
+
+    <div class="form-row">
+        <label for="orderDate">Order Date:</label>
+        <input id="orderDate" type="date" />
+    </div>
+
+    
+    <div class="form-row right">
+        <button id="addItem">Add Order Item</button>
+    </div>
+
+    <table id="orderTable">
+        <thead>
+            <tr>
+                <th>Product</th>
+                <th class="right">Price (Rs.)</th>
+                <th class="center">Qty</th>
+                <th class="center">Discount (%)</th>
+                <th class="right">Discount (Rs.)</th>
+                <th class="right">Amount (Rs.)</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody id="orderBody"></tbody>
+        <tfoot>
+            <tr>
+                <td colspan="4">Total</td>
+                <td class="right" id="totalDiscount">0.00</td>
+                <td class="right" id="totalAmount">0.00</td>
+                <td></td>
+            </tr>
+        </tfoot>
+    </table>
+
+    <br>
+    <div class="saveOrderBtn">
+        <button id="saveOrder">Save Order</button>
+    </div>
+    <div id="status"></div>
+
+    <script>
+        const PRODUCT_ENDPOINTS = ['/api/Products', '/api/ProductsList', '/api/Ecom', '/api/Products/Get'];
+        const CREATE_ORDER_ENDPOINT = '/api/Order';
+        const CREATE_ORDER_ITEMS_ENDPOINT = '/api/OrderItem';
+
+        let products = [];
+        const orderItems = [];
+        let generatedOrderId = null;
+
+        function fmt(n) { return (Number(n) || 0).toFixed(2); }
+
+        async function loadProducts() {
+            let lastErr;
+            for (const url of PRODUCT_ENDPOINTS) {
+                try {
+                    const res = await fetch(url, { method: 'GET' });
+                    if (!res.ok) { lastErr = new Error(`${url} returned ${res.status}`); continue; }
+                    const json = await res.json();
+                    if (!Array.isArray(json)) { lastErr = new Error(`${url} returned non-array`); continue; }
+                    products = json.map(p => ({
+                        productId: p.productId ?? p.productID ?? p.id ?? p.ProductId ?? null,
+                        productName: p.productName ?? p.name ?? p.productname ?? p.ProductName ?? '',
+                        price: Number(p.price ?? p.Price ?? 0)
+                    })).filter(p => p.productId != null);
+                    if (products.length > 0) return;
+                    lastErr = new Error(`${url} returned empty array`);
+                } catch (e) {
+                    lastErr = e;
+                }
+            }
+            throw lastErr ?? new Error('No product endpoints available');
+        }
+
+        function addRow(defaults = {}) {
+            const rowId = crypto.randomUUID();
+            const item = {
+                rowId,
+                productId: defaults.productId ?? null,
+                price: defaults.price ?? 0,
+                qty: defaults.qty ?? 1,
+                discountPct: defaults.discountPct ?? 0,
+                discountRs: 0,
+                amountRs: 0
+            };
+            orderItems.push(item);
+
+            const tr = document.createElement('tr');
+            tr.dataset.rowId = rowId;
+
+            const tdProduct = document.createElement('td');
+            const sel = document.createElement('select');
+            sel.innerHTML = '<option value="">-- Loading products --</option>';
+            sel.addEventListener('change', () => {
+                item.productId = sel.value ? Number(sel.value) : null;
+                const p = products.find(x => x.productId === item.productId);
+                item.price = p ? Number(p.price) : 0;
+                priceInput.value = fmt(item.price);
+                recomputeRow(item, tr);
+            });
+            tdProduct.appendChild(sel);
+
+            const tdPrice = document.createElement('td');
+            tdPrice.className = 'right';
+            const priceInput = document.createElement('input');
+            priceInput.type = 'number';
+            priceInput.step = '0.01';
+            priceInput.className = 'price';
+            priceInput.value = fmt(item.price);
+            priceInput.addEventListener('input', () => {
+                item.price = Number(priceInput.value) || 0;
+                recomputeRow(item, tr);
+            });
+            tdPrice.appendChild(priceInput);
+
+            const tdQty = document.createElement('td');
+            tdQty.className = 'center';
+            const qtyInput = document.createElement('input');
+            qtyInput.type = 'number';
+            qtyInput.min = '1';
+            qtyInput.step = '1';
+            qtyInput.className = 'qty';
+            qtyInput.value = item.qty;
+            qtyInput.addEventListener('input', () => {
+                const v = Number(qtyInput.value) || 1;
+                item.qty = v < 1 ? 1 : v;
+                qtyInput.value = item.qty;
+                recomputeRow(item, tr);
+            });
+            tdQty.appendChild(qtyInput);
+
+            const tdDiscPct = document.createElement('td');
+            tdDiscPct.className = 'center';
+            const discPctInput = document.createElement('input');
+            discPctInput.type = 'number';
+            discPctInput.min = '0';
+            discPctInput.max = '100';
+            discPctInput.step = '1';
+            discPctInput.className = 'percent';
+            discPctInput.value = item.discountPct;
+            discPctInput.addEventListener('input', () => {
+                const v = Number(discPctInput.value) || 0;
+                item.discountPct = Math.max(0, Math.min(100, v));
+                discPctInput.value = item.discountPct;
+                recomputeRow(item, tr);
+            });
+            tdDiscPct.appendChild(discPctInput);
+
+            const tdDiscRs = document.createElement('td');
+            tdDiscRs.className = 'right';
+            const discRsSpan = document.createElement('span');
+            discRsSpan.textContent = fmt(item.discountRs);
+            tdDiscRs.appendChild(discRsSpan);
+
+            const tdAmt = document.createElement('td');
+            tdAmt.className = 'right';
+            const amtSpan = document.createElement('span');
+            amtSpan.textContent = fmt(item.amountRs);
+            tdAmt.appendChild(amtSpan);
+
+            const tdAction = document.createElement('td');
+            const delBtn = document.createElement('button');
+            delBtn.textContent = 'Delete';
+            delBtn.addEventListener('click', () => {
+                const idx = orderItems.findIndex(x => x.rowId === rowId);
+                if (idx >= 0) orderItems.splice(idx, 1);
+                tr.remove();
+                recomputeTotals();
+            });
+            tdAction.appendChild(delBtn);
+
+            tr.appendChild(tdProduct);
+            tr.appendChild(tdPrice);
+            tr.appendChild(tdQty);
+            tr.appendChild(tdDiscPct);
+            tr.appendChild(tdDiscRs);
+            tr.appendChild(tdAmt);
+            tr.appendChild(tdAction);
+
+            document.getElementById('orderBody').appendChild(tr);
+            recomputeRow(item, tr);
+            return sel;
+        }
+
+        function recomputeRow(item, tr) {
+            const gross = item.price * item.qty;
+            item.discountRs = (gross * item.discountPct) / 100;
+            item.amountRs = gross - item.discountRs;
+            tr.querySelector('td:nth-child(5) span').textContent = fmt(item.discountRs);
+            tr.querySelector('td:nth-child(6) span').textContent = fmt(item.amountRs);
+            recomputeTotals();
+        }
+
+        function recomputeTotals() {
+            const totalDiscount = orderItems.reduce((sum, i) => sum + (Number(i.discountRs) || 0), 0);
+            const totalAmount = orderItems.reduce((sum, i) => sum + (Number(i.amountRs) || 0), 0);
+            document.getElementById('totalDiscount').textContent = fmt(totalDiscount);
+            document.getElementById('totalAmount').textContent = fmt(totalAmount);
+        }
+
+        async function saveOrder() {
+            const status = document.getElementById('status');
+            status.textContent = '';
+            status.className = '';
+
+            const dateVal = document.getElementById('orderDate').value;
+            if (!dateVal) {
+                status.textContent = 'Order Date is required.';
+                status.className = 'error';
+                return;
+            }
+            if (orderItems.length === 0) {
+                status.textContent = 'Add at least one order item.';
+                status.className = 'error';
+                return;
+            }
+
+            const totalDiscount = orderItems.reduce((sum, i) => sum + (Number(i.discountRs) || 0), 0);
+            const totalAmount = orderItems.reduce((sum, i) => sum + (Number(i.amountRs) || 0), 0);
+
+            const orderPayload = {
+                orderDate: dateVal,
+                totalAmount: Number(totalAmount.toFixed(2)),
+                discount: Number(totalDiscount.toFixed(2))
+            };
+
+            try {
+                const resOrder = await fetch(CREATE_ORDER_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(orderPayload)
+                });
+                if (!resOrder.ok) {
+                    const msg = await resOrder.text();
+                    throw new Error('Order creation failed: ' + msg);
+                }
+                const savedOrder = await resOrder.json();
+                generatedOrderId = savedOrder.orderId ?? savedOrder.OrderId ?? savedOrder.orderId;
+                if (generatedOrderId) document.getElementById('orderNo').textContent = String(generatedOrderId);
+
+                const itemsPayload = orderItems.map(i => {
+                    if (!i.productId) throw new Error('Each row must have a selected product.');
+                    return { orderId: generatedOrderId, productId: i.productId, quantity: i.qty };
+                });
+
+                const resItems = await fetch(CREATE_ORDER_ITEMS_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(itemsPayload)
+                });
+                if (!resItems.ok) {
+                    const msg = await resItems.text();
+                    throw new Error('Order items creation failed: ' + msg);
+                }
+
+                status.textContent = 'Order saved successfully.';
+                status.className = 'success';
+            } catch (err) {
+                status.textContent = err.message;
+                status.className = 'error';
+            }
+        }
+
+        function populateAllSelects() {
+            const selects = Array.from(document.querySelectorAll('#orderBody select'));
+            if (products.length === 0) {
+                selects.forEach(s => s.innerHTML = '<option value="">-- No products --</option>');
+                return 0;
+            }
+            const options = ['<option value="">-- Select Product --</option>']
+                .concat(products.map(p => `<option value="${p.productId}">${p.productName} — ${fmt(p.price)}</option>`))
+                .join('');
+            selects.forEach(s => {
+                const prev = s.value;
+                s.innerHTML = options;
+                if (prev) s.value = prev;
+            });
+            return selects.length;
+        }
+
+        (async function init() {
+            const now = new Date();
+            const pad = v => String(v).padStart(2, '0');
+            const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+            document.getElementById('orderDate').value = today;
+
+            document.getElementById('orderNo').textContent = '[will be generated]';
+
+            addRow();
+
+            try {
+                await loadProducts();
+                populateAllSelects();
+            } catch (e) {
+                document.getElementById('status').textContent = 'Products failed to load: ' + (e.message || e);
+                document.getElementById('status').className = 'error';
+                populateAllSelects();
+            }
+
+            document.getElementById('addItem').addEventListener('click', () => {
+                addRow();
+                populateAllSelects();
+            });
+            document.getElementById('saveOrder').addEventListener('click', saveOrder);
+        })();
+    </script>
+</body>
+</html>
